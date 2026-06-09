@@ -5,7 +5,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
 <title>GMi Panel QC</title>
-<script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.3/dist/umd/supabase.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@500;600;700&display=swap" rel="stylesheet"/>
@@ -288,6 +288,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
     </div>
     <button class="config-save" id="cfg-btn" onclick="saveConfig()">Connect &amp; Launch</button>
     <div id="cfg-err" style="color:#f87171;font-size:12px;margin-top:8px;min-height:16px;line-height:1.5;"></div>
+    <div id="cfg-debug" style="font-size:10px;color:var(--text3);background:var(--surface2);border-radius:var(--radius);padding:8px 10px;margin-top:8px;display:none;font-family:monospace;white-space:pre-wrap;word-break:break-all;max-height:120px;overflow-y:auto;"></div>
     <div class="config-note">Your keys are stored only in this browser's localStorage. They are never sent anywhere except directly to your Supabase project. <a href="https://supabase.com" target="_blank">Learn more →</a></div>
   </div>
 </div>
@@ -428,9 +429,13 @@ function saveConfig(){
   const key=document.getElementById('cfg-key').value.trim();
   const btn=document.getElementById('cfg-btn');
   const err=document.getElementById('cfg-err');
+  const dbg=document.getElementById('cfg-debug');
   err.textContent='';
   if(!url||!key){err.textContent='Please enter both URL and anon key.';return;}
-  if(!url.startsWith('https://')){err.textContent='URL must start with https://';return;}
+  if(!url.startsWith('https://')){err.textContent='URL must start with https:// — check you copied the full URL';return;}
+  // Show debug info
+  dbg.style.display='block';
+  dbg.textContent='URL: '+url.substring(0,40)+'…\nKey: '+key.substring(0,20)+'…\nsupabase global: '+(typeof window.supabase)+' / createClient: '+(typeof window.supabase?.createClient);
   btn.textContent='Connecting…';btn.disabled=true;
   localStorage.setItem('sb_url',url);
   localStorage.setItem('sb_key',key);
@@ -442,12 +447,14 @@ async function initSupabase(url,key){
   const err=document.getElementById('cfg-err');
   try{
     // window.supabase is the UMD global from the unpkg build
-    if(!window.supabase){
-      err.textContent='Supabase library failed to load. Check your internet connection and refresh.';
+    // Handle both UMD global shapes for supabase-js v2
+    const sbLib=window.supabase||window.Supabase||window.supabaseJs;
+    if(!sbLib||!sbLib.createClient){
+      err.textContent='Supabase library failed to load. Check your internet connection and refresh the page.';
       btn.textContent='Connect & Launch';btn.disabled=false;return;
     }
-    supabase=window.supabase.createClient(url,key,{
-      auth:{persistSession:false}
+    supabase=sbLib.createClient(url,key,{
+      auth:{persistSession:false,autoRefreshToken:false}
     });
     // Test the connection with a lightweight query
     const {error}=await supabase.from('panels').select('id').limit(1);

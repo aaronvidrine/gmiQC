@@ -577,6 +577,13 @@ async function loadAllData(){
         PHOTOS[ph.panel_id][ph.photo_key].push({id:ph.id,name:ph.name,url:ph.url});
       });
     }
+    // Hide "no file" state while PDFs are loading
+    Object.keys(PANELS).forEach(id=>{
+      const loading=document.getElementById('drw-loading-'+id);
+      const nofile=document.getElementById('drw-nofile-'+id);
+      if(loading) loading.style.display='block';
+      if(nofile) nofile.style.display='none';
+    });
     // Load PDFs from storage concurrently for faster initial load
     const panelIds=Object.keys(PANELS);
     // Load the first panel's PDF immediately (likely what user opens first)
@@ -714,12 +721,15 @@ async function handleXLSX(input){
   let loaded=0; XLSX_TOTAL_SF=0;
   Object.keys(XLSX_DATA).forEach(k=>delete XLSX_DATA[k]);
   for(const row of rows){
+    // Sum col G for EVERY row first — regardless of whether it has a panel ID
+    const rawSF=parseFloat(row['G']);
+    if(!isNaN(rawSF)&&rawSF>0) XLSX_TOTAL_SF+=rawSF;
+    // Skip header rows and blank panel IDs for the panel data map
     const pid=String(row['D']||'').trim();
-    if(!pid||pid.toLowerCase()==='panel number') continue;
+    if(!pid||pid.toLowerCase()==='panel number'||pid.toLowerCase()==='square footage') continue;
     const width=String(row['E']||'').trim()||'—';
     const height=String(row['F']||'').trim()||'—';
     const sf=parseFloat(row['G'])||0;
-    if(sf>0) XLSX_TOTAL_SF+=sf;
     XLSX_DATA[pid]={width,height,sf};
     loaded++;
     if(PANELS[pid]){PANELS[pid].width=width;PANELS[pid].height=height;PANELS[pid].sf=sf;populateDimInputs(pid);}
@@ -800,38 +810,66 @@ async function processPDF(file){
 }
 
 // ── PDF Storage ────────────────────────────────────────────────
+function pdfPath(id){
+  return id.replace(/[^a-zA-Z0-9.\-_]/g,'_')+'.pdf';
+}
+
 async function storePDF(id,arrayBuffer){
   const blob=new Blob([arrayBuffer],{type:'application/pdf'});
-  const path=id.replace(/[^a-zA-Z0-9.\-_]/g,'_')+'.pdf';
+  const path=pdfPath(id);
   const {error}=await supabase.storage.from('panel-pdfs').upload(path,blob,{upsert:true,contentType:'application/pdf'});
-  if(error)console.warn('PDF storage error:',error.message);
-  else{const {data}=supabase.storage.from('panel-pdfs').getPublicUrl(path);if(PANELS[id])PANELS[id].pdfUrl=data.publicUrl;}
+  if(error){
+    console.warn('PDF storage error:',error.message);
+    return;
+  }
+  // Save the public URL directly into the panels table so all devices can load it
+  const {data}=supabase.storage.from('panel-pdfs').getPublicUrl(path);
+  const publicUrl=data.publicUrl;
+  if(PANELS[id]) PANELS[id].pdfUrl=publicUrl;
+  await supabase.from('panels').update({file_name:PANELS[id]?.file||'',updated_at:new Date().toISOString()}).eq('id',id);
+  console.log('PDF stored at:',publicUrl);
 }
 
 async function loadPDFFromStorage(id){
-  const path=id.replace(/[^a-zA-Z0-9.\-_]/g,'_')+'.pdf';
+  const path=pdfPath(id);
   try{
+    // Get the public URL
     const {data}=supabase.storage.from('panel-pdfs').getPublicUrl(path);
-    const resp=await fetch(data.publicUrl);
-    if(!resp.ok) return;
+    const publicUrl=data.publicUrl;
+    console.log('Loading PDF from:',publicUrl);
+    // Fetch with cache-busting to avoid stale responses on mobile
+    const resp=await fetch(publicUrl+'?t='+Date.now(),{cache:'no-store'});
+    if(!resp.ok){
+      console.log('PDF fetch failed:',resp.status,'for',id);
+      return;
+    }
     const buf=await resp.arrayBuffer();
     const doc=await pdfjsLib.getDocument({data:buf}).promise;
     pdfDocs[id]=doc;
     pdfPage[id]=pdfPage[id]||1;
-    // Show the viewer toolbar now that we have the doc
+    if(PANELS[id]) PANELS[id].pdfUrl=publicUrl;
+    // Update the viewer UI
     const viewer=document.getElementById('drw-viewer-'+id);
     const noDrawing=document.getElementById('drw-nodrawing-'+id);
     const fnEl=document.getElementById('drw-fn-'+id);
-    if(viewer) viewer.style.display='flex';
-    if(noDrawing) noDrawing.style.display='none';
-    if(fnEl&&PANELS[id]&&PANELS[id].file) fnEl.textContent=PANELS[id].file;
-    // Render if this panel is currently open
+    if(viewer){viewer.style.display='flex';}
+    if(noDrawing){noDrawing.style.display='none';}
+    if(fnEl&&PANELS[id]?.file) fnEl.textContent=PANELS[id].file;
+    // Render immediately if this panel is open
     if(activeId===id){
-      setTimeout(()=>renderPDF(id),60);
+      setTimeout(()=>renderPDF(id),100);
     }
+    console.log('PDF loaded OK for',id);
+    // Hide loading indicator
+    const loading=document.getElementById('drw-loading-'+id);
+    if(loading) loading.style.display='none';
   }catch(e){
-    // PDF not yet uploaded for this panel — that's fine
-    console.log('No PDF in storage for',id);
+    console.log('PDF load error for',id,':',e.message);
+    // Show "no file" state after failed load
+    const loading=document.getElementById('drw-loading-'+id);
+    const nofile=document.getElementById('drw-nofile-'+id);
+    if(loading) loading.style.display='none';
+    if(nofile) nofile.style.display='block';
   }
 }
 
@@ -1009,11 +1047,14 @@ function buildView(id){
     </div>
     <div class="pv-body">
       <div class="pv-drawing-col">
-        <div class="no-drawing" id="drw-nodrawing-${id}" onclick="document.getElementById('drw-ri-${id}').click()">
+        <div class="no-drawing" id="drw-nodrawing-${id}">
           <input type="file" id="drw-ri-${id}" accept="application/pdf" onchange="replacePDF('${id}',this)"/>
-          <div style="font-size:20px;opacity:.2;">⬡</div>
-          <div style="font-size:11px;color:var(--accent);">Upload PDF drawing</div>
-          <div style="font-size:10px;color:var(--text3);margin-top:4px;">Tap to browse</div>
+          <div style="font-size:20px;opacity:.2;margin-bottom:6px;">⬡</div>
+          <div id="drw-loading-${id}" style="font-size:11px;color:var(--text3);">Loading drawing…</div>
+          <div id="drw-nofile-${id}" style="display:none;">
+            <div style="font-size:11px;color:var(--accent);margin-bottom:8px;">No drawing uploaded</div>
+            <button onclick="document.getElementById('drw-ri-${id}').click()" style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:var(--font-mono);font-size:11px;padding:6px 12px;cursor:pointer;">Upload PDF</button>
+          </div>
         </div>
         <div id="drw-viewer-${id}" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
           <div class="drawing-area" id="drw-area-${id}">

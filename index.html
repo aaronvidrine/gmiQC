@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -464,20 +463,32 @@ async function initSupabase(url,key){
       auth:{persistSession:false,autoRefreshToken:false}
     });
     dbg.textContent+='\nTesting connection…';
-    const {data,error}=await supabase.from('panels').select('id').limit(1);
-    if(error){
-      dbg.textContent+='\nError: '+JSON.stringify(error);
-      if(error.code==='42P01'||error.message.includes('does not exist')){
-        err.textContent='Tables not found — run the SQL from Step 2 of setup instructions in your Supabase SQL Editor.';
-      } else if(error.code==='401'||error.message.toLowerCase().includes('key')){
-        err.textContent='Invalid API key — use the anon public key, not the service_role key.';
-      } else {
-        err.textContent='Error ('+error.code+'): '+error.message;
-      }
+    // Use a raw REST ping instead of a table query to avoid PGRST path issues
+    const resp=await fetch(url+'/rest/v1/panels?select=id&limit=1',{
+      headers:{'apikey':key,'Authorization':'Bearer '+key}
+    });
+    dbg.textContent+='\nHTTP status: '+resp.status;
+    if(resp.status===401){
+      err.textContent='Invalid API key — use the anon public key, not the service_role key.';
       btn.textContent='Connect & Launch';btn.disabled=false;
       localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
       return;
     }
+    if(resp.status===404||resp.status===406){
+      err.textContent='Tables not found — run the SQL from Step 2 of the setup instructions in your Supabase SQL Editor, then try again.';
+      btn.textContent='Connect & Launch';btn.disabled=false;
+      localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
+      return;
+    }
+    if(!resp.ok&&resp.status!==200){
+      const body=await resp.text();
+      dbg.textContent+='\nBody: '+body.substring(0,200);
+      err.textContent='Connection error (HTTP '+resp.status+'): '+body.substring(0,120);
+      btn.textContent='Connect & Launch';btn.disabled=false;
+      localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
+      return;
+    }
+    // Success
     dbg.style.display='none';
     document.getElementById('config-screen').style.display='none';
     document.getElementById('app').style.display='block';

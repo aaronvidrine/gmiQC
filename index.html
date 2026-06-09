@@ -461,49 +461,48 @@ async function initSupabase(url,key){
     const sbLib=window.supabase||window.Supabase||window.supabaseJs;
     if(!sbLib||!sbLib.createClient){
       err.textContent='Supabase library failed to load. Refresh and try again.';
-      btn.textContent='Connect & Launch';btn.disabled=false;return;
+      btn.textContent='Connect & Launch';
+      btn.disabled=false;
+      return;
     }
-
-    // Clean up URL — remove trailing slash
     const cleanUrl=url.replace(/\/+$/,'');
-
     supabase=sbLib.createClient(cleanUrl,key,{
       auth:{persistSession:false,autoRefreshToken:false}
     });
-
-    // Use the Supabase JS client directly — skip manual fetch entirely
-    dbg.textContent+='\nQuerying panels table via Supabase client…';
-    const {data,error}=await supabase.from('panels').select('id').limit(1);
-    dbg.textContent+='\ndata='+JSON.stringify(data)+' error='+JSON.stringify(error);
-
-    if(error){
-      if(error.code==='42P01'||error.message.includes('does not exist')||error.message.includes('relation')){
-        err.textContent='Tables not found — run the SQL setup in your Supabase SQL Editor.';
-      } else if(error.code==='PGRST125'){
-        err.textContent='URL format error — make sure your Supabase URL ends with .supabase.co and has no extra path (e.g. no /rest/v1 at the end).';
-      } else if(error.status===401||error.code==='401'){
+    dbg.textContent+='\nQuerying panels table…';
+    const result=await supabase.from('panels').select('id').limit(1);
+    dbg.textContent+='\ndata='+JSON.stringify(result.data)+' error='+JSON.stringify(result.error);
+    if(result.error){
+      const code=result.error.code||'';
+      const msg=result.error.message||'';
+      if(code==='42P01'||msg.includes('does not exist')||msg.includes('relation')){
+        err.textContent='Tables not found — run the SQL from Step 2 of the setup instructions in your Supabase SQL Editor.';
+      } else if(code==='PGRST125'||msg.includes('Invalid path')){
+        err.textContent='URL format error — paste your Project URL exactly as shown in Supabase Settings → API (e.g. https://xxxx.supabase.co).';
+      } else if(code==='401'||result.error.status===401||msg.toLowerCase().includes('key')){
         err.textContent='Invalid API key — use the anon public key from Supabase Settings → API.';
       } else {
-        err.textContent='Error ('+error.code+'): '+error.message;
+        err.textContent='Error ('+code+'): '+msg;
       }
-      btn.textContent='Connect & Launch';btn.disabled=false;
-      localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
+      btn.textContent='Connect & Launch';
+      btn.disabled=false;
+      localStorage.removeItem('sb_url');
+      localStorage.removeItem('sb_key');
       return;
     }
-
-    // Success — launch app
     dbg.style.display='none';
     document.getElementById('config-screen').style.display='none';
     document.getElementById('app').style.display='block';
     setSyncStatus('synced','● Connected');
     loadAllData();
     subscribeToChanges();
-
   }catch(e){
     dbg.textContent+='\nException: '+e.name+': '+e.message;
     err.textContent='Failed: '+e.message;
-    btn.textContent='Connect & Launch';btn.disabled=false;
-    localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
+    btn.textContent='Connect & Launch';
+    btn.disabled=false;
+    localStorage.removeItem('sb_url');
+    localStorage.removeItem('sb_key');
   }
 }
 <!DOCTYPE html>

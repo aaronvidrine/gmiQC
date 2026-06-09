@@ -464,55 +464,544 @@ async function initSupabase(url,key){
       btn.textContent='Connect & Launch';btn.disabled=false;return;
     }
 
-    supabase=sbLib.createClient(url,key,{
+    // Clean up URL — remove trailing slash
+    const cleanUrl=url.replace(/\/+$/,'');
+
+    supabase=sbLib.createClient(cleanUrl,key,{
       auth:{persistSession:false,autoRefreshToken:false}
     });
 
-    // Test connection using the Supabase health check endpoint
-    // This avoids any PostgREST table query issues entirely
-    dbg.textContent+='\nPinging Supabase health endpoint…';
-    const healthUrl=url+'/rest/v1/';
-    const resp=await fetch(healthUrl,{
-      method:'GET',
-      headers:{
-        'apikey':key,
-        'Authorization':'Bearer '+key,
-        'Content-Type':'application/json'
-      }
-    });
-    dbg.textContent+='\nHTTP '+resp.status;
+    // Use the Supabase JS client directly — skip manual fetch entirely
+    dbg.textContent+='\nQuerying panels table via Supabase client…';
+    const {data,error}=await supabase.from('panels').select('id').limit(1);
+    dbg.textContent+='\ndata='+JSON.stringify(data)+' error='+JSON.stringify(error);
 
-    if(resp.status===401){
-      err.textContent='Invalid API key — paste the anon public key from Supabase Settings → API.';
+    if(error){
+      if(error.code==='42P01'||error.message.includes('does not exist')||error.message.includes('relation')){
+        err.textContent='Tables not found — run the SQL setup in your Supabase SQL Editor.';
+      } else if(error.code==='PGRST125'){
+        err.textContent='URL format error — make sure your Supabase URL ends with .supabase.co and has no extra path (e.g. no /rest/v1 at the end).';
+      } else if(error.status===401||error.code==='401'){
+        err.textContent='Invalid API key — use the anon public key from Supabase Settings → API.';
+      } else {
+        err.textContent='Error ('+error.code+'): '+error.message;
+      }
       btn.textContent='Connect & Launch';btn.disabled=false;
       localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
       return;
     }
 
-    // Any 2xx or even 404 here means we reached Supabase successfully
-    // 404 just means no default route, which is fine — connection works
-    if(resp.status===200||resp.status===404||resp.status===400){
-      // Now verify the panels table exists
-      dbg.textContent+='\nChecking tables…';
-      const tableResp=await fetch(url+'/rest/v1/panels?limit=1',{
-        method:'GET',
-        headers:{
-          'apikey':key,
-          'Authorization':'Bearer '+key,
-          'Content-Type':'application/json',
-          'Accept':'application/json'
-        }
-      });
-      dbg.textContent+='\nTable check HTTP '+tableResp.status;
-      if(tableResp.status===404||tableResp.status===406){
-        const body=await tableResp.text();
-        dbg.textContent+='\n'+body.substring(0,150);
-        err.textContent='Tables not found — please run the SQL from Step 2 of the setup instructions in your Supabase SQL Editor.';
-        btn.textContent='Connect & Launch';btn.disabled=false;
-        localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
-        return;
+    // Success — launch app
+    dbg.style.display='none';
+    document.getElementById('config-screen').style.display='none';
+    document.getElementById('app').style.display='block';
+    setSyncStatus('synced','● Connected');
+    loadAllData();
+    subscribeToChanges();
+
+  }catch(e){
+    dbg.textContent+='\nException: '+e.name+': '+e.message;
+    err.textContent='Failed: '+e.message;
+    btn.textContent='Connect & Launch';btn.disabled=false;
+    localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
+  }
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
+<meta http-equiv="Pragma" content="no-cache"/>
+<meta http-equiv="Expires" content="0"/>
+<title>GMi Panel QC</title>
+<script>
+// If this page is loaded inside an iframe, break out to a full tab.
+// This is necessary because fetch/CORS is blocked in sandboxed iframes.
+if(window.self!==window.top){
+  window.top.location.href=window.self.location.href;
+}
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.3/dist/umd/supabase.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@500;600;700&display=swap" rel="stylesheet"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+:root{
+  --bg:#0d0f12;--surface:#141619;--surface2:#1c1f23;--surface3:#242830;
+  --border:#2a2e35;--border2:#343a44;
+  --accent:#c8f060;--accent2:#7dd3fc;
+  --text:#e8eaed;--text2:#8b9099;--text3:#555c66;
+  --pass:#4ade80;--pass-bg:rgba(74,222,128,.08);
+  --fail:#f87171;--fail-bg:rgba(248,113,113,.08);
+  --warn:#fbbf24;--warn-bg:rgba(251,191,36,.08);
+  --font-head:'Syne',sans-serif;--font-mono:'DM Mono',monospace;
+  --radius:8px;--radius-lg:12px;
+  --sidebar:260px;
+}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font-mono);font-size:13px;line-height:1.6;}
+
+/* ── Config screen ──────────────────────────────────────────── */
+#config-screen{display:flex;align-items:center;justify-content:center;height:100vh;padding:1.5rem;}
+.config-box{background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:32px;max-width:500px;width:100%;}
+.config-box h1{font-family:var(--font-head);font-size:20px;color:var(--accent);margin-bottom:6px;}
+.config-box p{font-size:12px;color:var(--text3);margin-bottom:20px;line-height:1.7;}
+.config-field{margin-bottom:12px;}
+.config-field label{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--text3);display:block;margin-bottom:5px;}
+.config-field input{width:100%;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:var(--font-mono);font-size:12px;padding:9px 12px;}
+.config-field input:focus{outline:none;border-color:var(--accent2);}
+.config-save{width:100%;padding:11px;background:var(--accent);color:#000;font-family:var(--font-mono);font-size:13px;font-weight:500;border:none;border-radius:var(--radius);cursor:pointer;margin-top:8px;}
+.config-save:hover{background:#d8ff70;}
+.config-note{font-size:11px;color:var(--text3);margin-top:12px;line-height:1.6;}
+.config-note a{color:var(--accent2);}
+
+/* ── App layout ─────────────────────────────────────────────── */
+#app{display:none;height:100vh;overflow:hidden;}
+.layout{display:grid;grid-template-columns:var(--sidebar) 1fr;height:100vh;}
+@media(max-width:700px){
+  .layout{grid-template-columns:1fr;grid-template-rows:auto 1fr;}
+  .sidebar{height:auto;max-height:45vh;position:relative;}
+  .pv-body{grid-template-columns:1fr!important;}
+  .pv-drawing-col{max-height:40vh;}
+  .pv-qc-col{max-height:none;}
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────── */
+.sidebar{background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;}
+.sidebar-header{padding:14px 14px 12px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.logo{font-family:var(--font-head);font-size:15px;font-weight:700;color:var(--accent);display:flex;align-items:center;gap:7px;margin-bottom:2px;}
+.logo-dot{width:7px;height:7px;background:var(--accent);border-radius:50%;animation:pulse 2s infinite;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
+.logo-sub{font-size:9px;color:var(--text3);letter-spacing:.1em;text-transform:uppercase;}
+
+/* SF tracker */
+.sf-tracker{background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-lg);margin:8px 10px 2px;padding:12px 14px;}
+.sf-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:7px;}
+.sf-pct{font-family:var(--font-head);font-size:28px;font-weight:700;color:var(--accent);line-height:1;}
+.sf-pct-sym{font-size:14px;color:var(--accent);margin-left:2px;line-height:2;}
+.sf-title{font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.1em;}
+.sf-bar-wrap{background:var(--surface3);border-radius:99px;height:7px;overflow:hidden;margin-bottom:7px;}
+.sf-bar{height:100%;border-radius:99px;background:linear-gradient(90deg,var(--accent2),var(--accent));transition:width .6s cubic-bezier(.4,0,.2,1);}
+.sf-cells{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;}
+.sf-cell{background:var(--surface3);border-radius:5px;padding:5px 6px;}
+.sf-cell-val{font-size:11px;font-weight:500;color:var(--text);font-family:var(--font-head);}
+.sf-cell-lbl{font-size:8px;color:var(--text3);margin-top:1px;}
+
+/* Upload zones */
+.upload-zones{padding:6px 8px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.upload-zone{border:1px dashed var(--border2);border-radius:var(--radius);padding:8px 10px;cursor:pointer;text-align:center;transition:all .2s;margin-bottom:5px;}
+.upload-zone:last-child{margin-bottom:0;}
+.upload-zone.pdf-zone{border-color:rgba(200,240,96,.3);}
+.upload-zone.pdf-zone:hover{border-color:rgba(200,240,96,.6);background:rgba(200,240,96,.04);}
+.upload-zone.xlsx-zone{border-color:rgba(125,211,252,.3);}
+.upload-zone.xlsx-zone:hover{border-color:rgba(125,211,252,.6);background:rgba(125,211,252,.04);}
+.upload-zone input{display:none;}
+.uz-text{font-size:11px;font-weight:500;letter-spacing:.03em;}
+.uz-text.pdf{color:var(--accent);}
+.uz-text.xlsx{color:var(--accent2);}
+.uz-sub{font-size:9px;color:var(--text3);margin-top:1px;}
+.xlsx-badge{margin:0 8px 4px;padding:4px 9px;background:rgba(125,211,252,.06);border:1px solid rgba(125,211,252,.2);border-radius:var(--radius);font-size:9px;color:var(--accent2);display:none;align-items:center;justify-content:space-between;}
+.xlsx-badge.show{display:flex;}
+.xlsx-clear{background:none;border:none;color:var(--text3);cursor:pointer;font-family:var(--font-mono);font-size:11px;}
+.xlsx-clear:hover{color:var(--fail);}
+.upload-progress{padding:4px 8px;display:none;}
+.uprog-bar-wrap{background:var(--surface3);border-radius:99px;height:3px;overflow:hidden;}
+.uprog-bar{height:100%;background:var(--accent);border-radius:99px;transition:width .3s;}
+.uprog-msg{font-size:9px;color:var(--text3);margin-top:3px;}
+
+/* Panel list */
+.panel-list-section{font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.12em;padding:8px 12px 4px;flex-shrink:0;}
+.panel-list{flex:1;overflow-y:auto;padding:0 6px 4px;}
+.pi{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:var(--radius);cursor:pointer;border:1px solid transparent;margin-bottom:2px;transition:all .15s;}
+.pi:hover{background:var(--surface2);border-color:var(--border);}
+.pi.active{background:var(--surface3);border-color:var(--border2);}
+.pi-id{font-size:12px;font-weight:500;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.pi-sf{font-size:9px;color:var(--text3);}
+.pi-tag{font-size:8px;padding:1px 5px;border-radius:3px;flex-shrink:0;}
+.pi-tag.ew{background:rgba(200,240,96,.12);color:var(--accent);}
+.pi-tag.iw{background:rgba(125,211,252,.1);color:var(--accent2);}
+.pi-dot{width:9px;height:9px;border-radius:50%;border:1px solid var(--border2);background:var(--surface3);flex-shrink:0;font-size:7px;display:flex;align-items:center;justify-content:center;}
+.pi.done .pi-dot{background:var(--pass);border-color:var(--pass);color:#000;}
+.pi.fail .pi-dot{background:var(--fail);border-color:var(--fail);color:#000;}
+.pi.partial .pi-dot{background:var(--warn);border-color:var(--warn);color:#000;}
+
+/* Sidebar footer */
+.sidebar-footer{border-top:1px solid var(--border);padding:8px;flex-shrink:0;}
+.sidebar-stats{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:6px;}
+.stat-box{background:var(--surface2);border-radius:var(--radius);padding:6px 8px;border:1px solid var(--border);}
+.stat-num{font-size:16px;font-weight:500;font-family:var(--font-head);}
+.stat-num.g{color:var(--pass);}.stat-num.r{color:var(--fail);}.stat-num.a{color:var(--warn);}
+.stat-lbl{font-size:8px;color:var(--text3);text-transform:uppercase;letter-spacing:.07em;}
+.sb-btn{width:100%;padding:7px;border-radius:var(--radius);font-family:var(--font-mono);font-size:11px;cursor:pointer;border:1px dashed rgba(200,240,96,.25);background:rgba(200,240,96,.04);color:var(--accent);text-align:center;margin-bottom:4px;}
+.sb-btn:hover{background:rgba(200,240,96,.1);}
+.sb-btn.danger{border-color:rgba(248,113,113,.25);background:rgba(248,113,113,.03);color:var(--fail);}
+.sb-btn.danger:hover{background:rgba(248,113,113,.08);}
+.sync-status{font-size:9px;color:var(--text3);text-align:center;padding:3px 0 0;}
+.sync-status.syncing{color:var(--warn);}
+.sync-status.synced{color:var(--pass);}
+.sync-status.error{color:var(--fail);}
+
+/* ── Main area ───────────────────────────────────────────────── */
+.main-area{overflow:hidden;position:relative;display:flex;flex-direction:column;}
+.welcome{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:14px;padding:2rem;text-align:center;}
+.welcome-drop{border:2px dashed rgba(200,240,96,.2);border-radius:var(--radius-lg);padding:40px 32px;cursor:pointer;transition:all .2s;max-width:440px;width:100%;background:rgba(200,240,96,.02);}
+.welcome-drop:hover,.welcome-drop.drag-over{border-color:rgba(200,240,96,.5);background:rgba(200,240,96,.05);}
+.welcome-drop input{display:none;}
+.wd-icon{font-size:32px;opacity:.2;margin-bottom:10px;}
+.wd-title{font-family:var(--font-head);font-size:16px;font-weight:600;color:var(--text2);margin-bottom:5px;}
+.wd-sub{font-size:11px;color:var(--text3);line-height:1.7;}
+
+/* ── Panel view ──────────────────────────────────────────────── */
+.panel-view{display:none;flex-direction:column;height:100%;overflow:hidden;}
+.panel-view.active{display:flex;}
+.pv-top{background:var(--surface);border-bottom:1px solid var(--border);padding:10px 16px;display:flex;align-items:center;gap:8px;flex-shrink:0;flex-wrap:wrap;}
+.pv-id{font-family:var(--font-head);font-size:15px;font-weight:600;}
+.pv-tags{display:flex;gap:5px;}
+.pv-tag{font-size:9px;padding:2px 7px;border-radius:4px;}
+.pv-tag.ew{background:rgba(200,240,96,.12);color:var(--accent);border:1px solid rgba(200,240,96,.2);}
+.pv-tag.iw{background:rgba(125,211,252,.1);color:var(--accent2);border:1px solid rgba(125,211,252,.2);}
+.pv-tag.win{background:rgba(251,191,36,.08);color:var(--warn);border:1px solid rgba(251,191,36,.2);}
+.pv-tag.open{background:rgba(74,222,128,.08);color:var(--pass);border:1px solid rgba(74,222,128,.2);}
+.pv-tag.sh{background:rgba(200,240,96,.07);color:var(--accent);border:1px solid rgba(200,240,96,.15);}
+.pv-spacer{flex:1;}
+.pv-status{font-size:10px;padding:3px 9px;border-radius:20px;font-weight:500;white-space:nowrap;}
+.pv-status.pending{background:var(--surface3);color:var(--text2);border:1px solid var(--border2);}
+.pv-status.partial{background:var(--warn-bg);color:var(--warn);border:1px solid rgba(251,191,36,.3);}
+.pv-status.done{background:var(--pass-bg);color:var(--pass);border:1px solid rgba(74,222,128,.3);}
+.pv-status.fail{background:var(--fail-bg);color:var(--fail);border:1px solid rgba(248,113,113,.3);}
+.export-btn{background:rgba(200,240,96,.08);border:1px solid rgba(200,240,96,.25);border-radius:var(--radius);color:var(--accent);font-family:var(--font-mono);font-size:10px;padding:4px 10px;cursor:pointer;}
+.export-btn:hover{background:rgba(200,240,96,.16);}
+
+.pv-body{display:grid;grid-template-columns:1fr 1fr;flex:1;overflow:hidden;min-height:0;}
+.pv-drawing-col{overflow:hidden;display:flex;flex-direction:column;border-right:1px solid var(--border);}
+.pv-qc-col{overflow-y:auto;padding:16px 18px;}
+
+/* Drawing */
+.drawing-area{flex:1;overflow:hidden;background:#0a0a0a;position:relative;cursor:grab;user-select:none;}
+.drawing-area.grabbing{cursor:grabbing;}
+.drawing-area canvas{display:block;border-radius:3px;transform-origin:0 0;position:absolute;}
+.drawing-toolbar{background:var(--surface);border-top:1px solid var(--border);padding:6px 12px;display:flex;align-items:center;gap:6px;flex-shrink:0;}
+.drw-btn{background:var(--surface2);border:1px solid var(--border2);border-radius:4px;color:var(--text2);font-family:var(--font-mono);font-size:10px;padding:3px 8px;cursor:pointer;}
+.drw-btn:hover{background:var(--surface3);}
+.drw-btn:disabled{opacity:.3;cursor:not-allowed;}
+.drw-pi{font-size:10px;color:var(--text3);flex:1;text-align:center;}
+.drw-fn{font-size:9px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;}
+.replace-drw{background:none;border:none;color:var(--text3);font-family:var(--font-mono);font-size:9px;cursor:pointer;text-decoration:underline;}
+.replace-drw:hover{color:var(--accent);}
+.zoom-controls{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);display:flex;gap:3px;z-index:10;}
+.zoom-btn{background:rgba(20,22,25,.88);border:1px solid var(--border2);border-radius:5px;color:var(--text2);font-family:var(--font-mono);font-size:12px;width:26px;height:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;backdrop-filter:blur(4px);}
+.zoom-btn:hover{background:rgba(50,58,68,.95);color:var(--text);}
+.zoom-lbl{background:rgba(20,22,25,.88);border:1px solid var(--border2);border-radius:5px;color:var(--text3);font-family:var(--font-mono);font-size:9px;padding:0 6px;height:26px;display:flex;align-items:center;min-width:36px;justify-content:center;backdrop-filter:blur(4px);}
+.no-drawing{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:16px;cursor:pointer;border:2px dashed var(--border2);margin:10px;border-radius:var(--radius-lg);transition:all .2s;}
+.no-drawing:hover{border-color:var(--accent);}
+.no-drawing input{display:none;}
+
+/* QC checklist */
+.section{margin-bottom:16px;}
+.sec-title{font-size:9px;text-transform:uppercase;letter-spacing:.12em;color:var(--text3);margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:4px;}
+.sec-title::before{content:'';display:block;width:2px;height:8px;background:var(--accent);border-radius:2px;}
+.spec-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:10px;}
+.spec-cell{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:6px 8px;}
+.spec-cell.editable{padding:4px 8px;}
+.spec-l{font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:1px;}
+.spec-v{font-size:12px;font-weight:500;}
+.dim-input{width:100%;background:transparent;border:none;border-bottom:1px solid var(--border2);color:var(--text);font-family:var(--font-mono);font-size:12px;font-weight:500;padding:2px 0 2px;outline:none;}
+.dim-input:focus{border-bottom-color:var(--accent2);}
+.dim-input::placeholder{color:var(--text3);font-weight:400;font-size:11px;}
+.dim-input.has-val{color:var(--accent2);}
+.dim-callout{background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:9px 12px;margin-bottom:9px;}
+.dchead{font-size:9px;text-transform:uppercase;letter-spacing:.09em;color:var(--text3);margin-bottom:7px;}
+.dcgrid{display:grid;grid-template-columns:1fr 1fr;gap:9px;}
+.dcv-label{font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;}
+.opening-dim-input{width:100%;background:var(--surface3);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:var(--font-mono);font-size:13px;font-weight:500;padding:5px 8px;outline:none;}
+.opening-dim-input:focus{border-color:var(--accent2);}
+.opening-dim-input::placeholder{color:var(--text3);font-weight:400;font-size:11px;}
+.check-item{margin-bottom:7px;}
+.check-label{font-size:11px;color:var(--text2);margin-bottom:3px;display:flex;gap:3px;align-items:center;}
+.check-label .req{color:var(--fail);font-size:9px;}
+.check-sel{width:100%;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:var(--font-mono);font-size:12px;padding:5px 8px;appearance:none;cursor:pointer;}
+.check-sel:focus{outline:none;border-color:var(--accent2);}
+.check-sel option{background:var(--surface2);}
+.prog-wrap{background:var(--surface3);border-radius:99px;height:3px;margin-bottom:8px;overflow:hidden;}
+.prog-fill{height:100%;border-radius:99px;transition:width .4s,background .3s;}
+.photo-zone{margin-bottom:8px;}
+.photo-zone-lbl{font-size:11px;color:var(--text2);margin-bottom:3px;display:flex;align-items:center;gap:3px;}
+.photo-zone-lbl .req{color:var(--fail);font-size:9px;}
+.photo-drop{border:1px dashed var(--border2);border-radius:var(--radius);padding:8px 10px;cursor:pointer;display:flex;align-items:center;gap:7px;background:var(--surface2);transition:all .15s;}
+.photo-drop:hover{border-color:var(--accent2);background:rgba(125,211,252,.04);}
+.photo-drop input{display:none;}
+.photo-drop-txt{font-size:11px;color:var(--text3);}
+.photo-preview{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px;}
+.photo-thumb-wrap{position:relative;}
+.photo-thumb{width:48px;height:48px;object-fit:cover;border-radius:var(--radius);border:1px solid var(--border2);cursor:pointer;}
+.photo-remove{position:absolute;top:-4px;right:-4px;width:15px;height:15px;background:var(--fail);color:#000;border:none;border-radius:50%;cursor:pointer;font-size:9px;line-height:15px;text-align:center;font-weight:700;}
+.photo-uploading{font-size:10px;color:var(--text3);padding:6px 8px;background:var(--surface2);border-radius:var(--radius);display:none;}
+.notes-ta{width:100%;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:var(--font-mono);font-size:12px;padding:6px 8px;resize:none;}
+.notes-ta:focus{outline:none;border-color:var(--accent2);}
+.sign-row{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:8px;}
+.sign-item label{font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:3px;}
+.sign-item label .req{color:var(--fail);}
+.sign-item input{width:100%;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:var(--font-mono);font-size:12px;padding:5px 8px;}
+.sign-item input:focus{outline:none;border-color:var(--accent2);}
+.result-input{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-family:var(--font-mono);font-size:12px;padding:5px 8px;margin-bottom:8px;}
+.complete-btn{width:100%;padding:9px;border:none;border-radius:var(--radius);font-family:var(--font-mono);font-size:12px;cursor:pointer;letter-spacing:.03em;transition:all .2s;margin-top:3px;}
+.complete-btn.can{background:var(--accent);color:#000;font-weight:500;}
+.complete-btn.can:hover{background:#d8ff70;}
+.complete-btn.cannot{background:var(--surface3);color:var(--text3);cursor:not-allowed;border:1px solid var(--border);}
+.complete-btn.undone{background:transparent;color:var(--warn);border:1px solid rgba(251,191,36,.4);}
+.err-msg{font-size:10px;color:var(--fail);margin-top:4px;display:none;padding:5px 8px;background:var(--fail-bg);border-radius:var(--radius);border:1px solid rgba(248,113,113,.2);}
+
+/* Modal */
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(4px);z-index:100;align-items:center;justify-content:center;padding:1rem;}
+.modal-bg.open{display:flex;}
+.modal{background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-lg);padding:20px;width:380px;max-width:100%;max-height:90vh;overflow-y:auto;}
+.modal h3{font-family:var(--font-head);font-size:14px;font-weight:600;margin-bottom:12px;}
+.mf{margin-bottom:9px;}
+.mf label{font-size:9px;text-transform:uppercase;letter-spacing:.09em;color:var(--text3);display:block;margin-bottom:3px;}
+.mf input,.mf select{width:100%;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:var(--font-mono);font-size:12px;padding:6px 8px;}
+.mf input:focus,.mf select:focus{outline:none;border-color:var(--accent2);}
+.mf select option{background:var(--surface2);}
+.mc-btns{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px;}
+.mc-btn{background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text2);font-family:var(--font-mono);font-size:10px;padding:3px 7px;cursor:pointer;}
+.mc-btn.sel{background:rgba(200,240,96,.1);border-color:var(--accent);color:var(--accent);}
+.modal-btns{display:flex;gap:7px;margin-top:14px;}
+.modal-btns button{flex:1;padding:8px;border-radius:var(--radius);font-family:var(--font-mono);font-size:11px;cursor:pointer;border:1px solid var(--border2);}
+.m-cancel{background:transparent;color:var(--text2);}
+.m-cancel:hover{background:var(--surface2);}
+.m-add{background:var(--accent);color:#000;border-color:var(--accent);font-weight:500;}
+
+/* Lightbox */
+.lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:200;align-items:center;justify-content:center;cursor:zoom-out;}
+.lightbox.open{display:flex;}
+.lightbox img{max-width:95vw;max-height:95vh;object-fit:contain;border-radius:var(--radius);}
+
+/* Toast */
+.toast{position:fixed;bottom:16px;right:16px;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);padding:8px 13px;font-size:11px;color:var(--text);z-index:300;opacity:0;transform:translateY(8px);transition:all .3s;pointer-events:none;max-width:280px;}
+.toast.show{opacity:1;transform:translateY(0);}
+.toast.success{border-color:rgba(74,222,128,.4);color:var(--pass);}
+.toast.error{border-color:rgba(248,113,113,.4);color:var(--fail);}
+.toast.warn{border-color:rgba(251,191,36,.4);color:var(--warn);}
+
+::-webkit-scrollbar{width:4px;height:4px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
+</style>
+</head>
+<body>
+
+<!-- ── Config screen ── -->
+<div id="config-screen">
+  <div class="config-box">
+    <h1>⬡ GMi Panel QC</h1>
+    <p>Connect to your Supabase project to enable shared access across all devices. Your data will be stored securely and accessible by your whole team.<br/><br/>See <strong>SETUP_INSTRUCTIONS.md</strong> to create your free Supabase project.</p>
+    <div class="config-field">
+      <label>Supabase Project URL</label>
+      <input type="text" id="cfg-url" placeholder="https://xxxxxxxxxxxx.supabase.co"/>
+    </div>
+    <div class="config-field">
+      <label>Supabase Anon Key</label>
+      <input type="text" id="cfg-key" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."/>
+    </div>
+    <button class="config-save" id="cfg-btn" onclick="saveConfig()">Connect &amp; Launch</button>
+    <div id="cfg-err" style="color:#f87171;font-size:12px;margin-top:8px;min-height:16px;line-height:1.5;"></div>
+    <div id="cfg-debug" style="font-size:10px;color:var(--text3);background:var(--surface2);border-radius:var(--radius);padding:8px 10px;margin-top:8px;display:none;font-family:monospace;white-space:pre-wrap;word-break:break-all;max-height:120px;overflow-y:auto;"></div>
+    <div class="config-note">Your keys are stored only in this browser's localStorage. They are never sent anywhere except directly to your Supabase project. <a href="https://supabase.com" target="_blank">Learn more →</a></div>
+  </div>
+</div>
+
+<!-- ── Main app ── -->
+<div id="app">
+<div class="layout">
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-header">
+    <div class="logo"><div class="logo-dot"></div>GMi</div>
+    <div class="logo-sub">Panel QC</div>
+  </div>
+
+  <div class="sf-tracker">
+    <div class="sf-head">
+      <div class="sf-title">QC progress by SF</div>
+      <div style="display:flex;align-items:flex-end;">
+        <div class="sf-pct" id="sf-pct">—</div>
+        <div class="sf-pct-sym" id="sf-pct-sym"></div>
+      </div>
+    </div>
+    <div class="sf-bar-wrap"><div class="sf-bar" id="sf-bar" style="width:0%"></div></div>
+    <div class="sf-cells">
+      <div class="sf-cell"><div class="sf-cell-val" id="sf-done">0.00</div><div class="sf-cell-lbl">SF complete</div></div>
+      <div class="sf-cell"><div class="sf-cell-val" id="sf-remain">0.00</div><div class="sf-cell-lbl">SF remaining</div></div>
+      <div class="sf-cell"><div class="sf-cell-val" id="sf-total">0.00</div><div class="sf-cell-lbl">SF total</div></div>
+    </div>
+  </div>
+
+  <div class="upload-zones">
+    <div class="upload-zone pdf-zone" id="sb-pdf-drop" onclick="document.getElementById('sb-pdf-input').click()">
+      <input type="file" id="sb-pdf-input" accept="application/pdf" multiple onchange="handlePDFs(this)"/>
+      <div class="uz-text pdf">⬡ Upload panel drawing PDFs</div>
+      <div class="uz-sub">One or multiple at once</div>
+    </div>
+    <div class="upload-zone xlsx-zone" onclick="document.getElementById('xlsx-input').click()">
+      <input type="file" id="xlsx-input" accept=".xlsx,.xls" onchange="handleXLSX(this)"/>
+      <div class="uz-text xlsx">⬡ Upload panel schedule (XLSX)</div>
+      <div class="uz-sub">Col D=ID · E=width · F=height · G=SF · from row 3</div>
+    </div>
+  </div>
+  <div class="xlsx-badge" id="xlsx-badge">
+    <span id="xlsx-badge-txt">—</span>
+    <button class="xlsx-clear" onclick="clearXLSX()">✕</button>
+  </div>
+  <div class="upload-progress" id="uprog">
+    <div class="uprog-bar-wrap"><div class="uprog-bar" id="uprog-bar" style="width:0%"></div></div>
+    <div class="uprog-msg" id="uprog-msg">Processing…</div>
+  </div>
+
+  <div class="panel-list-section">Panels</div>
+  <div class="panel-list" id="panel-list">
+    <div style="padding:8px 10px;font-size:10px;color:var(--text3);">Loading…</div>
+  </div>
+
+  <div class="sidebar-footer">
+    <div class="sidebar-stats">
+      <div class="stat-box"><div class="stat-num" id="st-total">0</div><div class="stat-lbl">Total</div></div>
+      <div class="stat-box"><div class="stat-num g" id="st-done">0</div><div class="stat-lbl">Complete</div></div>
+      <div class="stat-box"><div class="stat-num a" id="st-prog">0</div><div class="stat-lbl">In progress</div></div>
+      <div class="stat-box"><div class="stat-num r" id="st-fail">0</div><div class="stat-lbl">Flagged</div></div>
+    </div>
+    <button class="sb-btn" onclick="openModal()">+ Add panel manually</button>
+    <div class="sync-status" id="sync-status">● Connected</div>
+  </div>
+</aside>
+
+<!-- Main -->
+<main class="main-area" id="main-area">
+  <div class="welcome" id="welcome">
+    <div class="welcome-drop" id="welcome-drop" onclick="document.getElementById('welcome-pdf-input').click()">
+      <input type="file" id="welcome-pdf-input" accept="application/pdf" multiple onchange="handlePDFs(this)"/>
+      <div class="wd-icon">⬡</div>
+      <div class="wd-title">Drop panel drawing PDFs here</div>
+      <div class="wd-sub">Each PDF is parsed for its panel ID and added to the inspection list automatically. Or upload the XLSX schedule first, then PDFs.</div>
+    </div>
+    <div style="font-size:10px;color:var(--text3);letter-spacing:.1em;text-transform:uppercase;">or</div>
+    <button class="sb-btn" style="max-width:220px;" onclick="openModal()">+ Add panel manually</button>
+  </div>
+</main>
+
+</div>
+</div>
+
+<!-- Modal -->
+<div class="modal-bg" id="modal-bg">
+  <div class="modal">
+    <h3>Add panel manually</h3>
+    <div class="mf"><label>Panel ID</label><input type="text" id="m-id" placeholder="e.g. EW4026(W)"/></div>
+    <div class="mf"><label>Width</label><input type="text" id="m-width" placeholder="e.g. 11' - 7 3/8&quot;"/></div>
+    <div class="mf"><label>Height</label><input type="text" id="m-height" placeholder="e.g. 9' - 11 5/8&quot;"/></div>
+    <div class="mf"><label>Weight</label><input type="text" id="m-weight" placeholder="e.g. 550.60 lbf"/></div>
+    <div class="mf" id="m-ofields" style="display:none;">
+      <label>Opening width</label><input type="text" id="m-owidth" style="margin-bottom:6px;" placeholder="e.g. 7' - 3&quot;"/>
+      <label style="margin-top:4px;display:block;">Opening height</label><input type="text" id="m-oheight" placeholder="e.g. 8' - 0&quot;"/>
+    </div>
+    <div class="mf">
+      <label>QC sections</label>
+      <div class="mc-btns">
+        <button class="mc-btn sel" id="mc-sh" onclick="toggleMC('sh')">Sheathing</button>
+        <button class="mc-btn" id="mc-win" onclick="toggleMC('win')">Window</button>
+        <button class="mc-btn" id="mc-open" onclick="toggleMC('open')">Opening</button>
+      </div>
+    </div>
+    <div class="modal-btns">
+      <button class="m-cancel" onclick="closeModal()">Cancel</button>
+      <button class="m-add" onclick="addManual()">Add panel</button>
+    </div>
+  </div>
+</div>
+
+<div class="lightbox" id="lightbox" onclick="closeLightbox()">
+  <img id="lightbox-img" src="" alt=""/>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+// ── CONFIGURE YOUR SUPABASE PROJECT HERE ──────────────────────
+// After setting up Supabase per SETUP_INSTRUCTIONS.md,
+// paste your Project URL and anon key here, OR enter them
+// in the config screen when you first open the app.
+const HARDCODED_URL = '';
+const HARDCODED_KEY = '';
+// ─────────────────────────────────────────────────────────────
+
+pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+let supabase=null;
+const PANELS={}, PHOTOS={}, pdfDocs={}, pdfPage={}, zoomState={};
+let activeId=null, XLSX_TOTAL_SF=0;
+const XLSX_DATA={};
+
+// ── Config / connection ────────────────────────────────────────
+function saveConfig(){
+  const url=document.getElementById('cfg-url').value.trim();
+  const key=document.getElementById('cfg-key').value.trim();
+  const btn=document.getElementById('cfg-btn');
+  const err=document.getElementById('cfg-err');
+  const dbg=document.getElementById('cfg-debug');
+  err.textContent='';
+  if(!url||!key){err.textContent='Please enter both URL and anon key.';return;}
+  if(!url.startsWith('https://')){err.textContent='URL must start with https:// — check you copied the full URL';return;}
+  // Show debug info
+  dbg.style.display='block';
+  dbg.textContent='URL: '+url.substring(0,40)+'…\nKey: '+key.substring(0,20)+'…\nsupabase global: '+(typeof window.supabase)+' / createClient: '+(typeof window.supabase?.createClient);
+  btn.textContent='Connecting…';btn.disabled=true;
+  localStorage.setItem('sb_url',url);
+  localStorage.setItem('sb_key',key);
+  initSupabase(url,key);
+}
+
+async function initSupabase(url,key){
+  const btn=document.getElementById('cfg-btn');
+  const err=document.getElementById('cfg-err');
+  const dbg=document.getElementById('cfg-debug');
+  err.textContent='';
+  try{
+    const sbLib=window.supabase||window.Supabase||window.supabaseJs;
+    if(!sbLib||!sbLib.createClient){
+      err.textContent='Supabase library failed to load. Refresh and try again.';
+      btn.textContent='Connect & Launch';btn.disabled=false;return;
+    }
+    supabase=sbLib.createClient(url,key,{
+      auth:{persistSession:false,autoRefreshToken:false}
+    });
+
+    // Check the panels table directly
+    dbg.textContent+='\nChecking panels table…';
+    const resp=await fetch(url+'/rest/v1/panels?select=id&limit=1',{
+      method:'GET',
+      headers:{
+        'apikey':key,
+        'Authorization':'Bearer '+key,
+        'Accept':'application/json'
       }
-      // Connected successfully
+    });
+    dbg.textContent+='\nHTTP '+resp.status;
+    const body=await resp.text();
+    dbg.textContent+='\n'+body.substring(0,120);
+
+    if(resp.status===401||resp.status===403){
+      err.textContent='Invalid API key — paste the anon public key from Supabase Settings → API.';
+      btn.textContent='Connect & Launch';btn.disabled=false;
+      localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
+      return;
+    }
+    if(resp.status===404||body.includes('does not exist')||body.includes('relation')){
+      err.textContent='Tables not found — run the SQL from Step 2 of the setup instructions in your Supabase SQL Editor, then try again.';
+      btn.textContent='Connect & Launch';btn.disabled=false;
+      localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
+      return;
+    }
+    if(resp.status===200||resp.status===206){
+      // All good — launch the app
       dbg.style.display='none';
       document.getElementById('config-screen').style.display='none';
       document.getElementById('app').style.display='block';
@@ -521,11 +1010,17 @@ async function initSupabase(url,key){
       subscribeToChanges();
       return;
     }
-
-    // Unexpected status
-    const body=await resp.text();
-    dbg.textContent+='\nBody: '+body.substring(0,200);
-    err.textContent='Unexpected response (HTTP '+resp.status+'). Check your Supabase URL.';
+    // Any other status — still try to launch if body looks like JSON array
+    if(body.startsWith('[')||body.startsWith('{')){
+      dbg.style.display='none';
+      document.getElementById('config-screen').style.display='none';
+      document.getElementById('app').style.display='block';
+      setSyncStatus('synced','● Connected');
+      loadAllData();
+      subscribeToChanges();
+      return;
+    }
+    err.textContent='Unexpected response (HTTP '+resp.status+'). See debug info above.';
     btn.textContent='Connect & Launch';btn.disabled=false;
     localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
 
@@ -535,6 +1030,7 @@ async function initSupabase(url,key){
     btn.textContent='Connect & Launch';btn.disabled=false;
     localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
   }
+}
 }
 
 function setSyncStatus(cls,msg){

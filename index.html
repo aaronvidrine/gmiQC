@@ -421,8 +421,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 // After setting up Supabase per SETUP_INSTRUCTIONS.md,
 // paste your Project URL and anon key here, OR enter them
 // in the config screen when you first open the app.
-const HARDCODED_URL = '';
-const HARDCODED_KEY = '';
+const HARDCODED_URL = 'https://amgoethmkawbllqliuwo.supabase.co';
+const HARDCODED_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFtZ29ldGhta2F3YmxscWxpdXdvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwMjU5MTcsImV4cCI6MjA5NjYwMTkxN30.0EjE-18RUz1Bn-dDJxNmKz5xAtgQObZ7fatxHV4cXhQ';
 // ─────────────────────────────────────────────────────────────
 
 // Safe localStorage wrappers — gracefully handle Tracking Prevention blocks
@@ -1216,12 +1216,18 @@ wireDrop(document.getElementById('sb-pdf-drop'),handlePDFs);
   const url=HARDCODED_URL||lsGet('sb_url');
   const key=HARDCODED_KEY||lsGet('sb_key');
   if(url&&key){
-    const urlEl=document.getElementById('cfg-url');
-    const keyEl=document.getElementById('cfg-key');
-    const btn=document.getElementById('cfg-btn');
-    if(urlEl) urlEl.value=url;
-    if(keyEl) keyEl.value=key;
-    if(btn){btn.textContent='Reconnecting…';btn.disabled=true;}
+    // If credentials are hardcoded or saved, skip config screen entirely
+    if(HARDCODED_URL){
+      // Hide config screen immediately — user never needs to see it
+      document.getElementById('config-screen').style.display='none';
+    } else {
+      const urlEl=document.getElementById('cfg-url');
+      const keyEl=document.getElementById('cfg-key');
+      const btn=document.getElementById('cfg-btn');
+      if(urlEl) urlEl.value=url;
+      if(keyEl) keyEl.value=key;
+      if(btn){btn.textContent='Reconnecting…';btn.disabled=true;}
+    }
     initSupabase(url,key);
   }
 })();

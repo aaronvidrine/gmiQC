@@ -596,22 +596,6 @@ async function loadAllData(){
         PHOTOS[ph.panel_id][ph.photo_key].push({id:ph.id,name:ph.name,url:ph.url});
       });
     }
-    // Hide "no file" state while PDFs are loading
-    Object.keys(PANELS).forEach(id=>{
-      const loading=document.getElementById('drw-loading-'+id);
-      const nofile=document.getElementById('drw-nofile-'+id);
-      if(loading) loading.style.display='block';
-      if(nofile) nofile.style.display='none';
-    });
-    // Load PDFs from storage concurrently for faster initial load
-    const panelIds=Object.keys(PANELS);
-    // Load the first panel's PDF immediately (likely what user opens first)
-    // then load the rest in the background
-    if(panelIds.length>0){
-      await loadPDFFromStorage(panelIds[0]);
-      // Load remaining in background without blocking
-      panelIds.slice(1).forEach(id=>loadPDFFromStorage(id));
-    }
     if(Object.keys(PANELS).length>0) document.getElementById('welcome').style.display='none';
     renderSidebar();
     updateSF();
@@ -874,14 +858,13 @@ async function loadPDFFromStorage(id){
     if(viewer){viewer.style.display='flex';}
     if(noDrawing){noDrawing.style.display='none';}
     if(fnEl&&PANELS[id]?.file) fnEl.textContent=PANELS[id].file;
-    // Render immediately if this panel is open
-    if(activeId===id){
-      setTimeout(()=>renderPDF(id),100);
-    }
     console.log('PDF loaded OK for',id);
     // Hide loading indicator
-    const loading=document.getElementById('drw-loading-'+id);
-    if(loading) loading.style.display='none';
+    const ldEl=document.getElementById('drw-loading-'+id);
+    if(ldEl) ldEl.style.display='none';
+    // Always render — the view DOM is guaranteed to exist because
+    // openPanel (which calls buildView) always runs before loadPDFFromStorage
+    setTimeout(()=>renderPDF(id),80);
   }catch(e){
     console.log('PDF load error for',id,':',e.message);
     // Show "no file" state after failed load
@@ -980,11 +963,13 @@ function openPanel(id){
   let view=document.getElementById('pv-'+id);
   if(!view){view=buildView(id);document.getElementById('main-area').appendChild(view);}
   view.classList.add('active');
-  // Render PDF if already loaded, otherwise trigger a fresh load from storage
+  // Always attempt to load/render PDF when a panel is opened
   if(pdfDocs[id]){
-    setTimeout(()=>renderPDF(id),60);
+    // Already in memory — render immediately
+    setTimeout(()=>renderPDF(id),80);
   } else {
-    // PDF not in memory yet — load it from Supabase Storage
+    // Not in memory — fetch from Supabase Storage
+    // loadPDFFromStorage will render once download completes
     loadPDFFromStorage(id);
   }
   setTimeout(()=>populateDimInputs(id),80);

@@ -452,28 +452,67 @@ async function initSupabase(url,key){
       err.textContent='Supabase library failed to load. Refresh and try again.';
       btn.textContent='Connect & Launch';btn.disabled=false;return;
     }
-    supabase=sbLib.createClient(url,key,{auth:{persistSession:false,autoRefreshToken:false}});
-    dbg.textContent+='\nTesting connection to Supabase…';
+
+    // Patch global fetch to fix DataCloneError caused by iframe sandbox restrictions.
+    // The error occurs because the browser cannot clone Headers objects across
+    // the postMessage boundary. We replace fetch with a version that converts
+    // the Request object to plain args before calling the real fetch.
+    const _realFetch=window.fetch.bind(window);
+    window.fetch=function(input,init){
+      try{
+        if(input instanceof Request){
+          const url2=input.url;
+          const opts={method:input.method,headers:{},body:undefined};
+          input.headers.forEach((v,k)=>{opts.headers[k]=v;});
+          if(input.method!=='GET'&&input.method!=='HEAD'){
+            return input.clone().text().then(body=>{
+              if(body) opts.body=body;
+              return _realFetch(url2,opts);
+            });
+          }
+          return _realFetch(url2,opts);
+        }
+        // Plain string URL — convert Headers object in init to plain object
+        if(init&&init.headers&&typeof init.headers.forEach==='function'){
+          const plain={};
+          init.headers.forEach((v,k)=>{plain[k]=v;});
+          return _realFetch(input,Object.assign({},init,{headers:plain}));
+        }
+        return _realFetch(input,init);
+      }catch(fe){
+        return _realFetch(input,init);
+      }
+    };
+
+    supabase=sbLib.createClient(url,key,{
+      auth:{persistSession:false,autoRefreshToken:false}
+    });
+
+    dbg.textContent+='\nTesting connection…';
     const {data,error}=await supabase.from('panels').select('id').limit(1);
-    dbg.textContent+='\nResponse — error: '+JSON.stringify(error);
+
     if(error){
       if(error.code==='42P01'||error.message.includes('does not exist')){
         err.textContent='Tables not found — please run the SQL from Step 2 of the setup instructions in your Supabase SQL Editor, then try again.';
-      } else if(error.message.toLowerCase().includes('api')||error.message.toLowerCase().includes('key')||error.code==='401'){
+      } else if(error.code==='401'||error.message.toLowerCase().includes('key')){
         err.textContent='Invalid API key — make sure you used the anon public key, not the service_role key.';
       } else {
-        err.textContent='Supabase error ('+error.code+'): '+error.message;
+        err.textContent='Error ('+error.code+'): '+error.message;
       }
+      dbg.textContent+='\nFailed: '+JSON.stringify(error);
       btn.textContent='Connect & Launch';btn.disabled=false;
       localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
       return;
     }
+
+    // Success
     dbg.style.display='none';
     document.getElementById('config-screen').style.display='none';
     document.getElementById('app').style.display='block';
     setSyncStatus('syncing','● Connecting…');
     loadAllData();
     subscribeToChanges();
+
   }catch(e){
     dbg.textContent+='\nException: '+e.name+': '+e.message;
     err.textContent='Error: '+e.message;

@@ -32,7 +32,7 @@ if(window.self!==window.top){
   --radius:8px;--radius-lg:12px;
   --sidebar:260px;
 }
-html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font-mono);font-size:13px;line-height:1.6;}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font-mono);font-size:13px;line-height:1.6;} @media(max-width:700px){html,body{height:auto;overflow-y:auto;}}
 
 /* ── Config screen ──────────────────────────────────────────── */
 #config-screen{display:flex;align-items:center;justify-content:center;height:100vh;padding:1.5rem;}
@@ -50,7 +50,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 
 /* ── App layout ─────────────────────────────────────────────── */
 #app{display:none;height:100vh;overflow:hidden;}
-.layout{display:grid;grid-template-columns:var(--sidebar) 1fr;height:100vh;}
+.layout{display:grid;grid-template-columns:var(--sidebar) 1fr;height:100vh;} @media(max-width:700px){.layout{height:auto;min-height:100vh;overflow-y:auto;}}
 @media(max-width:700px){
   :root{--sidebar:100%;}
   .layout{grid-template-columns:1fr;grid-template-rows:auto 1fr;height:auto;min-height:100vh;}
@@ -146,7 +146,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .sync-status.error{color:var(--fail);}
 
 /* ── Main area ───────────────────────────────────────────────── */
-.main-area{overflow:hidden;position:relative;display:flex;flex-direction:column;}
+.main-area{overflow:hidden;position:relative;display:flex;flex-direction:column;} @media(max-width:700px){.main-area{overflow:visible;}}
 .welcome{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:14px;padding:2rem;text-align:center;}
 .welcome-drop{border:2px dashed rgba(200,240,96,.2);border-radius:var(--radius-lg);padding:40px 32px;cursor:pointer;transition:all .2s;max-width:440px;width:100%;background:rgba(200,240,96,.02);}
 .welcome-drop:hover,.welcome-drop.drag-over{border-color:rgba(200,240,96,.5);background:rgba(200,240,96,.05);}
@@ -908,6 +908,12 @@ function openPanel(id){
   if(pdfDocs[id])setTimeout(()=>renderPDF(id),60);
   setTimeout(()=>populateDimInputs(id),80);
   refresh(id);renderSidebar();
+  // On mobile: scroll the main area (panel view) into view immediately
+  if(window.innerWidth<=700){
+    setTimeout(()=>{
+      view.scrollIntoView({behavior:'smooth',block:'start'});
+    },60);
+  }
 }
 
 // ── PDF render + zoom ──────────────────────────────────────────

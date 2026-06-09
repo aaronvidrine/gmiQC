@@ -445,32 +445,38 @@ function saveConfig(){
 async function initSupabase(url,key){
   const btn=document.getElementById('cfg-btn');
   const err=document.getElementById('cfg-err');
+  const dbg=document.getElementById('cfg-debug');
   try{
-    // window.supabase is the UMD global from the unpkg build
-    // Handle both UMD global shapes for supabase-js v2
     const sbLib=window.supabase||window.Supabase||window.supabaseJs;
     if(!sbLib||!sbLib.createClient){
-      err.textContent='Supabase library failed to load. Check your internet connection and refresh the page.';
+      err.textContent='Supabase library failed to load. Refresh and try again.';
       btn.textContent='Connect & Launch';btn.disabled=false;return;
     }
-    supabase=sbLib.createClient(url,key,{
-      auth:{persistSession:false,autoRefreshToken:false}
-    });
-    // Test the connection with a lightweight query
-    const {error}=await supabase.from('panels').select('id').limit(1);
+    supabase=sbLib.createClient(url,key,{auth:{persistSession:false,autoRefreshToken:false}});
+    dbg.textContent+='\nTesting connection to Supabase…';
+    const {data,error}=await supabase.from('panels').select('id').limit(1);
+    dbg.textContent+='\nResponse — error: '+JSON.stringify(error);
     if(error){
-      err.textContent='Connection error: '+error.message+'. Check your URL and key, and make sure you ran the SQL setup.';
+      if(error.code==='42P01'||error.message.includes('does not exist')){
+        err.textContent='Tables not found — please run the SQL from Step 2 of the setup instructions in your Supabase SQL Editor, then try again.';
+      } else if(error.message.toLowerCase().includes('api')||error.message.toLowerCase().includes('key')||error.code==='401'){
+        err.textContent='Invalid API key — make sure you used the anon public key, not the service_role key.';
+      } else {
+        err.textContent='Supabase error ('+error.code+'): '+error.message;
+      }
       btn.textContent='Connect & Launch';btn.disabled=false;
       localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
       return;
     }
+    dbg.style.display='none';
     document.getElementById('config-screen').style.display='none';
     document.getElementById('app').style.display='block';
     setSyncStatus('syncing','● Connecting…');
     loadAllData();
     subscribeToChanges();
   }catch(e){
-    err.textContent='Failed: '+e.message;
+    dbg.textContent+='\nException: '+e.name+': '+e.message;
+    err.textContent='Error: '+e.message;
     btn.textContent='Connect & Launch';btn.disabled=false;
     localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
   }

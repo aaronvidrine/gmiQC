@@ -1,8 +1,12 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
+<meta http-equiv="Pragma" content="no-cache"/>
+<meta http-equiv="Expires" content="0"/>
 <title>GMi Panel QC</title>
 <script>
 // If this page is loaded inside an iframe, break out to a full tab.
@@ -459,45 +463,75 @@ async function initSupabase(url,key){
       err.textContent='Supabase library failed to load. Refresh and try again.';
       btn.textContent='Connect & Launch';btn.disabled=false;return;
     }
+
     supabase=sbLib.createClient(url,key,{
       auth:{persistSession:false,autoRefreshToken:false}
     });
-    dbg.textContent+='\nTesting connection…';
-    // Use a raw REST ping instead of a table query to avoid PGRST path issues
-    const resp=await fetch(url+'/rest/v1/panels?select=id&limit=1',{
-      headers:{'apikey':key,'Authorization':'Bearer '+key}
+
+    // Test connection using the Supabase health check endpoint
+    // This avoids any PostgREST table query issues entirely
+    dbg.textContent+='\nPinging Supabase health endpoint…';
+    const healthUrl=url+'/rest/v1/';
+    const resp=await fetch(healthUrl,{
+      method:'GET',
+      headers:{
+        'apikey':key,
+        'Authorization':'Bearer '+key,
+        'Content-Type':'application/json'
+      }
     });
-    dbg.textContent+='\nHTTP status: '+resp.status;
+    dbg.textContent+='\nHTTP '+resp.status;
+
     if(resp.status===401){
-      err.textContent='Invalid API key — use the anon public key, not the service_role key.';
+      err.textContent='Invalid API key — paste the anon public key from Supabase Settings → API.';
       btn.textContent='Connect & Launch';btn.disabled=false;
       localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
       return;
     }
-    if(resp.status===404||resp.status===406){
-      err.textContent='Tables not found — run the SQL from Step 2 of the setup instructions in your Supabase SQL Editor, then try again.';
-      btn.textContent='Connect & Launch';btn.disabled=false;
-      localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
+
+    // Any 2xx or even 404 here means we reached Supabase successfully
+    // 404 just means no default route, which is fine — connection works
+    if(resp.status===200||resp.status===404||resp.status===400){
+      // Now verify the panels table exists
+      dbg.textContent+='\nChecking tables…';
+      const tableResp=await fetch(url+'/rest/v1/panels?limit=1',{
+        method:'GET',
+        headers:{
+          'apikey':key,
+          'Authorization':'Bearer '+key,
+          'Content-Type':'application/json',
+          'Accept':'application/json'
+        }
+      });
+      dbg.textContent+='\nTable check HTTP '+tableResp.status;
+      if(tableResp.status===404||tableResp.status===406){
+        const body=await tableResp.text();
+        dbg.textContent+='\n'+body.substring(0,150);
+        err.textContent='Tables not found — please run the SQL from Step 2 of the setup instructions in your Supabase SQL Editor.';
+        btn.textContent='Connect & Launch';btn.disabled=false;
+        localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
+        return;
+      }
+      // Connected successfully
+      dbg.style.display='none';
+      document.getElementById('config-screen').style.display='none';
+      document.getElementById('app').style.display='block';
+      setSyncStatus('synced','● Connected');
+      loadAllData();
+      subscribeToChanges();
       return;
     }
-    if(!resp.ok&&resp.status!==200){
-      const body=await resp.text();
-      dbg.textContent+='\nBody: '+body.substring(0,200);
-      err.textContent='Connection error (HTTP '+resp.status+'): '+body.substring(0,120);
-      btn.textContent='Connect & Launch';btn.disabled=false;
-      localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
-      return;
-    }
-    // Success
-    dbg.style.display='none';
-    document.getElementById('config-screen').style.display='none';
-    document.getElementById('app').style.display='block';
-    setSyncStatus('synced','● Connected');
-    loadAllData();
-    subscribeToChanges();
+
+    // Unexpected status
+    const body=await resp.text();
+    dbg.textContent+='\nBody: '+body.substring(0,200);
+    err.textContent='Unexpected response (HTTP '+resp.status+'). Check your Supabase URL.';
+    btn.textContent='Connect & Launch';btn.disabled=false;
+    localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
+
   }catch(e){
     dbg.textContent+='\nException: '+e.name+': '+e.message;
-    err.textContent='Failed to connect: '+e.message;
+    err.textContent='Failed: '+e.message;
     btn.textContent='Connect & Launch';btn.disabled=false;
     localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
   }

@@ -52,11 +52,22 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 #app{display:none;height:100vh;overflow:hidden;}
 .layout{display:grid;grid-template-columns:var(--sidebar) 1fr;height:100vh;}
 @media(max-width:700px){
-  .layout{grid-template-columns:1fr;grid-template-rows:auto 1fr;}
-  .sidebar{height:auto;max-height:45vh;position:relative;}
-  .pv-body{grid-template-columns:1fr!important;}
-  .pv-drawing-col{max-height:40vh;}
-  .pv-qc-col{max-height:none;}
+  :root{--sidebar:100%;}
+  .layout{grid-template-columns:1fr;grid-template-rows:auto 1fr;height:auto;min-height:100vh;}
+  .sidebar{height:auto;max-height:none;position:relative;overflow:visible;}
+  .panel-list{max-height:30vh;overflow-y:auto;}
+  .pv-body{grid-template-columns:1fr!important;height:auto;overflow:visible;}
+  .pv-drawing-col{max-height:50vh;min-height:280px;border-right:none!important;border-bottom:1px solid var(--border);}
+  .pv-qc-col{max-height:none;overflow-y:visible;padding:12px 14px;}
+  .panel-view{height:auto;overflow:visible;}
+  .main-area{overflow:visible;height:auto;}
+  .spec-grid{grid-template-columns:1fr 1fr;}
+  .sign-row{grid-template-columns:1fr;}
+  .dcgrid{grid-template-columns:1fr;}
+  .sidebar-stats{grid-template-columns:1fr 1fr;}
+  .sf-cells{grid-template-columns:1fr 1fr 1fr;}
+  .zoom-controls{bottom:6px;}
+  .pv-top{padding:8px 12px;}
 }
 
 /* ── Sidebar ─────────────────────────────────────────────────── */
@@ -145,7 +156,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .wd-sub{font-size:11px;color:var(--text3);line-height:1.7;}
 
 /* ── Panel view ──────────────────────────────────────────────── */
-.panel-view{display:none;flex-direction:column;height:100%;overflow:hidden;}
+.panel-view{display:none;flex-direction:column;height:100%;overflow:hidden;} @media(max-width:700px){.panel-view.active{height:auto;overflow:visible;display:block;}}
 .panel-view.active{display:flex;}
 .pv-top{background:var(--surface);border-bottom:1px solid var(--border);padding:10px 16px;display:flex;align-items:center;gap:8px;flex-shrink:0;flex-wrap:wrap;}
 .pv-id{font-family:var(--font-head);font-size:15px;font-weight:600;}
@@ -409,6 +420,18 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
       <button class="m-add" onclick="addManual()">Add panel</button>
     </div>
   </div>
+</div>
+
+<!-- Fullscreen PDF viewer for mobile -->
+<div id="pdf-fullscreen" style="display:none;position:fixed;inset:0;background:#000;z-index:500;flex-direction:column;">
+  <div style="background:var(--surface);padding:10px 14px;display:flex;align-items:center;gap:10px;flex-shrink:0;border-bottom:1px solid var(--border);">
+    <span id="pdf-fs-title" style="font-size:13px;font-weight:500;flex:1;color:var(--text);font-family:var(--font-head);"></span>
+    <button id="pdf-fs-prev" style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:var(--font-mono);font-size:13px;padding:5px 12px;cursor:pointer;" onclick="fsPDFPage(-1)">‹</button>
+    <span id="pdf-fs-pi" style="font-size:11px;color:var(--text3);min-width:40px;text-align:center;"></span>
+    <button id="pdf-fs-next" style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:var(--font-mono);font-size:13px;padding:5px 12px;cursor:pointer;" onclick="fsPDFPage(1)">›</button>
+    <button onclick="closeFsPDF()" style="background:var(--fail-bg);border:1px solid rgba(248,113,113,.3);border-radius:var(--radius);color:var(--fail);font-family:var(--font-mono);font-size:12px;padding:5px 12px;cursor:pointer;">✕ Close</button>
+  </div>
+  <div id="pdf-fs-canvas-wrap" style="flex:1;overflow:auto;background:#111;display:flex;align-items:flex-start;justify-content:center;padding:8px;-webkit-overflow-scrolling:touch;"></div>
 </div>
 
 <div class="lightbox" id="lightbox" onclick="closeLightbox()">
@@ -960,6 +983,7 @@ function buildView(id){
           <input type="file" id="drw-ri-${id}" accept="application/pdf" onchange="replacePDF('${id}',this)"/>
           <div style="font-size:20px;opacity:.2;">⬡</div>
           <div style="font-size:11px;color:var(--accent);">Upload PDF drawing</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:4px;">Tap to browse</div>
         </div>
         <div id="drw-viewer-${id}" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
           <div class="drawing-area" id="drw-area-${id}">
@@ -975,6 +999,7 @@ function buildView(id){
             <div class="drw-pi" id="drw-pi-${id}">1 / 1</div>
             <button class="drw-btn" id="drw-next-${id}" onclick="changePage('${id}',1)" disabled>›</button>
             <div class="drw-fn" id="drw-fn-${id}">${p.file||''}</div>
+            <button class="replace-drw" onclick="openFullscreenPDF('${id}')">⤢ Full</button>
             <button class="replace-drw" onclick="document.getElementById('drw-ri-${id}').click()">Replace</button>
           </div>
         </div>
@@ -1200,6 +1225,58 @@ async function addManual(){
 }
 
 // ── Toast ──────────────────────────────────────────────────────
+// ── Fullscreen PDF viewer (mobile-friendly) ──────────────────────────────────
+let _fsPDFId=null;
+let _fsPDFPage=1;
+
+async function openFullscreenPDF(id){
+  if(!pdfDocs[id]){toast('Drawing not loaded yet','warn');return;}
+  _fsPDFId=id;
+  _fsPDFPage=pdfPage[id]||1;
+  const overlay=document.getElementById('pdf-fullscreen');
+  overlay.style.display='flex';
+  document.body.style.overflow='hidden';
+  document.getElementById('pdf-fs-title').textContent=id;
+  await renderFsPDF();
+}
+
+async function renderFsPDF(){
+  const doc=pdfDocs[_fsPDFId];if(!doc)return;
+  const total=doc.numPages;
+  _fsPDFPage=Math.max(1,Math.min(total,_fsPDFPage));
+  document.getElementById('pdf-fs-pi').textContent=_fsPDFPage+' / '+total;
+  document.getElementById('pdf-fs-prev').disabled=_fsPDFPage<=1;
+  document.getElementById('pdf-fs-next').disabled=_fsPDFPage>=total;
+  const wrap=document.getElementById('pdf-fs-canvas-wrap');
+  const page=await doc.getPage(_fsPDFPage);
+  const vp0=page.getViewport({scale:1});
+  // Render at full screen width
+  const screenW=window.innerWidth-16;
+  const scale=screenW/vp0.width;
+  const vp=page.getViewport({scale:scale*2}); // 2x for retina
+  let canvas=wrap.querySelector('canvas');
+  if(!canvas){canvas=document.createElement('canvas');wrap.innerHTML='';wrap.appendChild(canvas);}
+  canvas.width=vp.width;canvas.height=vp.height;
+  canvas.style.width=(vp0.width*scale)+'px';
+  canvas.style.height=(vp0.height*scale)+'px';
+  canvas.style.display='block';
+  canvas.style.borderRadius='4px';
+  await page.render({canvasContext:canvas.getContext('2d'),viewport:vp}).promise;
+}
+
+function fsPDFPage(d){
+  _fsPDFPage+=d;
+  renderFsPDF();
+}
+
+function closeFsPDF(){
+  document.getElementById('pdf-fullscreen').style.display='none';
+  document.body.style.overflow='';
+  // Sync page back
+  if(_fsPDFId) pdfPage[_fsPDFId]=_fsPDFPage;
+  _fsPDFId=null;
+}
+
 function toast(msg,type=''){const t=document.getElementById('toast');t.textContent=msg;t.className='toast show'+(type?' '+type:'');clearTimeout(t._t);t._t=setTimeout(()=>t.className='toast',3500);}
 
 // ── Drag drop ──────────────────────────────────────────────────

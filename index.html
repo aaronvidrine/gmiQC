@@ -462,21 +462,38 @@ async function initSupabase(url,key){
   const dbg=document.getElementById('cfg-debug');
   err.textContent='';
   dbg.style.display='block';
-  dbg.textContent='Connecting to Supabase…';
+
+  // Strip any trailing slashes, spaces, or stray characters
+  const cleanUrl=url.trim().replace(/\/+$/,'');
+  const cleanKey=key.trim();
+
+  dbg.textContent='URL: '+cleanUrl+'\nKey: '+cleanKey.substring(0,20)+'...';
+
   try{
     const sbLib=window.supabase||window.Supabase;
     if(!sbLib||!sbLib.createClient){
-      err.textContent='Supabase library not loaded — refresh the page and try again.';
+      err.textContent='Supabase library not loaded.';
       btn.textContent='Connect & Launch';btn.disabled=false;return;
     }
-    const cleanUrl=url.replace(/\/+$/,'');
-    supabase=sbLib.createClient(cleanUrl,key,{auth:{persistSession:false,autoRefreshToken:false}});
-    dbg.textContent='Client created. Testing tables…';
+
+    supabase=sbLib.createClient(cleanUrl,cleanKey,{
+      auth:{persistSession:false,autoRefreshToken:false},
+      db:{schema:'public'},
+      global:{headers:{'apikey':cleanKey}}
+    });
+
+    // Log the exact URL the client will call
+    const testUrl=cleanUrl+'/rest/v1/panels?select=id&limit=1';
+    dbg.textContent+='\nTest URL: '+testUrl;
+
     const {data,error}=await supabase.from('panels').select('id').limit(1);
+    dbg.textContent+='\ndata='+JSON.stringify(data)+' error='+JSON.stringify(error);
+
     if(error){
-      dbg.textContent='Error: '+JSON.stringify(error);
       if((error.code||'').includes('42P01')||error.message.includes('exist')){
-        err.textContent='Tables not found — run the SQL from Step 2 of the setup instructions.';
+        err.textContent='Tables not found — run the SQL from Step 2 of setup instructions.';
+      } else if(error.code==='PGRST125'){
+        err.textContent='Bad URL — make sure it is exactly: https://xxxxxxxxxxxx.supabase.co (no trailing slash, no extra path)';
       } else {
         err.textContent='Error ('+error.code+'): '+error.message;
       }
@@ -484,14 +501,16 @@ async function initSupabase(url,key){
       lsRemove('sb_url');lsRemove('sb_key');
       return;
     }
-    dbg.textContent='Connected! Loading data…';
+
+    dbg.style.display='none';
     document.getElementById('config-screen').style.display='none';
     document.getElementById('app').style.display='block';
     setSyncStatus('synced','● Connected');
     loadAllData();
     subscribeToChanges();
+
   }catch(e){
-    dbg.textContent='Exception: '+e.message;
+    dbg.textContent+='\nException: '+e.name+': '+e.message;
     err.textContent='Failed: '+e.message;
     btn.textContent='Connect & Launch';btn.disabled=false;
     lsRemove('sb_url');lsRemove('sb_key');

@@ -577,9 +577,14 @@ async function loadAllData(){
         PHOTOS[ph.panel_id][ph.photo_key].push({id:ph.id,name:ph.name,url:ph.url});
       });
     }
-    // Load PDFs from storage
-    for(const id of Object.keys(PANELS)){
-      loadPDFFromStorage(id);
+    // Load PDFs from storage concurrently for faster initial load
+    const panelIds=Object.keys(PANELS);
+    // Load the first panel's PDF immediately (likely what user opens first)
+    // then load the rest in the background
+    if(panelIds.length>0){
+      await loadPDFFromStorage(panelIds[0]);
+      // Load remaining in background without blocking
+      panelIds.slice(1).forEach(id=>loadPDFFromStorage(id));
     }
     if(Object.keys(PANELS).length>0) document.getElementById('welcome').style.display='none';
     renderSidebar();
@@ -808,13 +813,26 @@ async function loadPDFFromStorage(id){
   try{
     const {data}=supabase.storage.from('panel-pdfs').getPublicUrl(path);
     const resp=await fetch(data.publicUrl);
-    if(!resp.ok)return;
+    if(!resp.ok) return;
     const buf=await resp.arrayBuffer();
     const doc=await pdfjsLib.getDocument({data:buf}).promise;
-    pdfDocs[id]=doc;pdfPage[id]=pdfPage[id]||1;
-    const view=document.getElementById('pv-'+id);
-    if(view&&activeId===id) setTimeout(()=>renderPDF(id),60);
-  }catch(e){/* PDF not yet uploaded — fine */}
+    pdfDocs[id]=doc;
+    pdfPage[id]=pdfPage[id]||1;
+    // Show the viewer toolbar now that we have the doc
+    const viewer=document.getElementById('drw-viewer-'+id);
+    const noDrawing=document.getElementById('drw-nodrawing-'+id);
+    const fnEl=document.getElementById('drw-fn-'+id);
+    if(viewer) viewer.style.display='flex';
+    if(noDrawing) noDrawing.style.display='none';
+    if(fnEl&&PANELS[id]&&PANELS[id].file) fnEl.textContent=PANELS[id].file;
+    // Render if this panel is currently open
+    if(activeId===id){
+      setTimeout(()=>renderPDF(id),60);
+    }
+  }catch(e){
+    // PDF not yet uploaded for this panel — that's fine
+    console.log('No PDF in storage for',id);
+  }
 }
 
 async function replacePDF(id,input){
@@ -905,7 +923,13 @@ function openPanel(id){
   let view=document.getElementById('pv-'+id);
   if(!view){view=buildView(id);document.getElementById('main-area').appendChild(view);}
   view.classList.add('active');
-  if(pdfDocs[id])setTimeout(()=>renderPDF(id),60);
+  // Render PDF if already loaded, otherwise trigger a fresh load from storage
+  if(pdfDocs[id]){
+    setTimeout(()=>renderPDF(id),60);
+  } else {
+    // PDF not in memory yet — load it from Supabase Storage
+    loadPDFFromStorage(id);
+  }
   setTimeout(()=>populateDimInputs(id),80);
   refresh(id);renderSidebar();
   // On mobile: scroll the main area (panel view) into view immediately

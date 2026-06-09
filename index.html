@@ -1,10 +1,11 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
 <title>GMi Panel QC</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@500;600;700&display=swap" rel="stylesheet"/>
@@ -285,7 +286,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
       <label>Supabase Anon Key</label>
       <input type="text" id="cfg-key" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."/>
     </div>
-    <button class="config-save" onclick="saveConfig()">Connect &amp; Launch</button>
+    <button class="config-save" id="cfg-btn" onclick="saveConfig()">Connect &amp; Launch</button>
+    <div id="cfg-err" style="color:#f87171;font-size:12px;margin-top:8px;min-height:16px;line-height:1.5;"></div>
     <div class="config-note">Your keys are stored only in this browser's localStorage. They are never sent anywhere except directly to your Supabase project. <a href="https://supabase.com" target="_blank">Learn more →</a></div>
   </div>
 </div>
@@ -424,22 +426,46 @@ const XLSX_DATA={};
 function saveConfig(){
   const url=document.getElementById('cfg-url').value.trim();
   const key=document.getElementById('cfg-key').value.trim();
-  if(!url||!key){toast('Please enter both URL and key','error');return;}
+  const btn=document.getElementById('cfg-btn');
+  const err=document.getElementById('cfg-err');
+  err.textContent='';
+  if(!url||!key){err.textContent='Please enter both URL and anon key.';return;}
+  if(!url.startsWith('https://')){err.textContent='URL must start with https://';return;}
+  btn.textContent='Connecting…';btn.disabled=true;
   localStorage.setItem('sb_url',url);
   localStorage.setItem('sb_key',key);
   initSupabase(url,key);
 }
 
-function initSupabase(url,key){
+async function initSupabase(url,key){
+  const btn=document.getElementById('cfg-btn');
+  const err=document.getElementById('cfg-err');
   try{
-    supabase=window.supabase.createClient(url,key);
+    // window.supabase is the UMD global from the unpkg build
+    if(!window.supabase){
+      err.textContent='Supabase library failed to load. Check your internet connection and refresh.';
+      btn.textContent='Connect & Launch';btn.disabled=false;return;
+    }
+    supabase=window.supabase.createClient(url,key,{
+      auth:{persistSession:false}
+    });
+    // Test the connection with a lightweight query
+    const {error}=await supabase.from('panels').select('id').limit(1);
+    if(error){
+      err.textContent='Connection error: '+error.message+'. Check your URL and key, and make sure you ran the SQL setup.';
+      btn.textContent='Connect & Launch';btn.disabled=false;
+      localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
+      return;
+    }
     document.getElementById('config-screen').style.display='none';
     document.getElementById('app').style.display='block';
     setSyncStatus('syncing','● Connecting…');
     loadAllData();
     subscribeToChanges();
   }catch(e){
-    toast('Connection failed: '+e.message,'error');
+    err.textContent='Failed: '+e.message;
+    btn.textContent='Connect & Launch';btn.disabled=false;
+    localStorage.removeItem('sb_url');localStorage.removeItem('sb_key');
   }
 }
 
@@ -1142,8 +1168,12 @@ wireDrop(document.getElementById('sb-pdf-drop'),handlePDFs);
   const url=HARDCODED_URL||localStorage.getItem('sb_url');
   const key=HARDCODED_KEY||localStorage.getItem('sb_key');
   if(url&&key){
-    document.getElementById('cfg-url').value=url;
-    document.getElementById('cfg-key').value=key;
+    const urlEl=document.getElementById('cfg-url');
+    const keyEl=document.getElementById('cfg-key');
+    const btn=document.getElementById('cfg-btn');
+    if(urlEl) urlEl.value=url;
+    if(keyEl) keyEl.value=key;
+    if(btn){btn.textContent='Reconnecting…';btn.disabled=true;}
     initSupabase(url,key);
   }
 })();

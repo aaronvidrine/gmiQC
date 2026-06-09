@@ -68,6 +68,17 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
   .sf-cells{grid-template-columns:1fr 1fr 1fr;}
   .zoom-controls{bottom:6px;}
   .pv-top{padding:8px 12px;}
+  /* Hide all PDF upload controls on mobile */
+  .pdf-zone{display:none!important;}
+  .welcome-drop{display:none!important;}
+  .replace-drw{display:none!important;}
+  #sb-pdf-drop{display:none!important;}
+  .welcome .welcome-or{display:none!important;}
+  .welcome .sb-btn{display:none!important;}
+  .pdf-upload-only{display:none!important;}
+  /* On mobile show a message instead of the no-drawing upload prompt */
+  .no-drawing{cursor:default!important;border-color:var(--border)!important;}
+  .mobile-welcome{display:block!important;}
 }
 
 /* ── Sidebar ─────────────────────────────────────────────────── */
@@ -386,6 +397,12 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
       <div class="wd-icon">⬡</div>
       <div class="wd-title">Drop panel drawing PDFs here</div>
       <div class="wd-sub">Each PDF is parsed for its panel ID and added to the inspection list automatically. Or upload the XLSX schedule first, then PDFs.</div>
+    </div>
+    <!-- Mobile-only message shown instead of PDF drop zone -->
+    <div class="mobile-welcome" style="display:none;text-align:center;padding:2rem 1.5rem;">
+      <div style="font-size:32px;opacity:.2;margin-bottom:12px;">⬡</div>
+      <div style="font-family:var(--font-head);font-size:16px;font-weight:600;color:var(--text2);margin-bottom:8px;">GMi Panel QC</div>
+      <div style="font-size:12px;color:var(--text3);line-height:1.7;">Select a panel from the list above to begin inspection.</div>
     </div>
     <div style="font-size:10px;color:var(--text3);letter-spacing:.1em;text-transform:uppercase;">or</div>
     <button class="sb-btn" style="max-width:220px;" onclick="openModal()">+ Add panel manually</button>
@@ -1053,7 +1070,7 @@ function buildView(id){
           <div id="drw-loading-${id}" style="font-size:11px;color:var(--text3);">Loading drawing…</div>
           <div id="drw-nofile-${id}" style="display:none;">
             <div style="font-size:11px;color:var(--accent);margin-bottom:8px;">No drawing uploaded</div>
-            <button onclick="document.getElementById('drw-ri-${id}').click()" style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:var(--font-mono);font-size:11px;padding:6px 12px;cursor:pointer;">Upload PDF</button>
+            <button class="pdf-upload-only" onclick="document.getElementById('drw-ri-${id}').click()" style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);color:var(--text);font-family:var(--font-mono);font-size:11px;padding:6px 12px;cursor:pointer;">Upload PDF</button>
           </div>
         </div>
         <div id="drw-viewer-${id}" style="display:none;flex-direction:column;flex:1;overflow:hidden;">

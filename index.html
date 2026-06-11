@@ -776,16 +776,22 @@ async function handlePDFs(input){
 }
 
 async function processPDF(file){
-  const arrayBuffer=await file.arrayBuffer();
-  const buf=arrayBuffer.slice(0);
-  const doc=await pdfjsLib.getDocument({data:buf}).promise;
+  // Keep TWO copies of the buffer:
+  // - one for PDF.js to parse (it detaches/consumes the ArrayBuffer)
+  // - one clean copy to upload to Supabase Storage and save to IndexedDB
+  const originalBuffer=await file.arrayBuffer();
+  const bufForParse=originalBuffer.slice(0);   // copy for PDF.js
+  const bufForStore=originalBuffer.slice(0);   // copy for storage
+
+  const doc=await pdfjsLib.getDocument({data:bufForParse}).promise;
   const page1=await doc.getPage(1);
   const tc=await page1.getTextContent();
   const raw=tc.items.map(i=>i.str).join(' ');
   let id=parseId(file.name)||parseId(raw)||file.name.replace(/\.pdf$/i,'').replace(/\s+/g,'_');
+
   if(PANELS[id]){
     pdfDocs[id]=doc;pdfPage[id]=1;
-    await storePDF(id,arrayBuffer);
+    await storePDF(id,bufForStore);
     renderPDF(id);
     toast(`Drawing updated: ${id}`,'success');
     return;
@@ -799,13 +805,12 @@ async function processPDF(file){
     hasSheathing:hasSh,hasWindow:hasW,hasOpening:hasOpen,
     vals:{},inspector:'',date:'',notes:''};
   if(XLSX_DATA[id]){panel.width=XLSX_DATA[id].width;panel.height=XLSX_DATA[id].height;panel.sf=XLSX_DATA[id].sf;}
-  // Save to DB
   setSyncStatus('syncing','● Saving…');
   const {error}=await supabase.from('panels').upsert(panelToDbRow(panel));
   if(error){toast('Save error: '+error.message,'error');return;}
   PANELS[id]=panel;PHOTOS[id]={};initKeys(id);
   pdfDocs[id]=doc;pdfPage[id]=1;
-  await storePDF(id,arrayBuffer);
+  await storePDF(id,bufForStore);
   setSyncStatus('synced','● Synced');
   document.getElementById('welcome').style.display='none';
   openPanel(id);
@@ -947,13 +952,15 @@ async function loadPDFFromStorage(id){
 
 async function replacePDF(id,input){
   const f=input.files[0];if(!f)return;
-  const arrayBuffer=await f.arrayBuffer();
-  const doc=await pdfjsLib.getDocument({data:arrayBuffer.slice(0)}).promise;
+  const originalBuffer=await f.arrayBuffer();
+  const bufForParse=originalBuffer.slice(0);
+  const bufForStore=originalBuffer.slice(0);
+  const doc=await pdfjsLib.getDocument({data:bufForParse}).promise;
   pdfDocs[id]=doc;pdfPage[id]=1;PANELS[id].file=f.name;
   const nm=document.getElementById('drw-fn-'+id);if(nm)nm.textContent=f.name;
   const nd=document.getElementById('drw-nodrawing-'+id);const vw=document.getElementById('drw-viewer-'+id);
   if(nd)nd.style.display='none';if(vw)vw.style.display='flex';
-  await storePDF(id,arrayBuffer); // storePDF now also saves to IDB cache
+  await storePDF(id,bufForStore); // storePDF saves to Supabase + IDB cache
   await supabase.from('panels').update({file_name:f.name,updated_at:new Date().toISOString()}).eq('id',id);
   renderPDF(id);input.value='';toast(`Drawing replaced for ${id}`,'success');
 }

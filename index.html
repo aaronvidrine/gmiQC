@@ -817,6 +817,60 @@ function pdfPath(id){
   return id.replace(/[^a-zA-Z0-9.\-_]/g,'_')+'.pdf';
 }
 
+// ── IndexedDB PDF cache ────────────────────────────────────────────────────────
+// Stores PDF ArrayBuffers locally so they don't need to re-download every session.
+const IDB_NAME='gmi_qc_pdfs';
+const IDB_VERSION=1;
+const IDB_STORE='pdfs';
+let _idb=null;
+
+function openIDB(){
+  return new Promise((resolve,reject)=>{
+    if(_idb){resolve(_idb);return;}
+    const req=indexedDB.open(IDB_NAME,IDB_VERSION);
+    req.onupgradeneeded=e=>{
+      e.target.result.createObjectStore(IDB_STORE);
+    };
+    req.onsuccess=e=>{_idb=e.target.result;resolve(_idb);};
+    req.onerror=e=>reject(e.target.error);
+  });
+}
+
+async function idbSavePDF(id,arrayBuffer){
+  try{
+    const db=await openIDB();
+    return new Promise((resolve,reject)=>{
+      const tx=db.transaction(IDB_STORE,'readwrite');
+      tx.objectStore(IDB_STORE).put(arrayBuffer,id);
+      tx.oncomplete=()=>resolve();
+      tx.onerror=e=>reject(e.target.error);
+    });
+  }catch(e){console.warn('IDB save error:',e.message);}
+}
+
+async function idbLoadPDF(id){
+  try{
+    const db=await openIDB();
+    return new Promise((resolve,reject)=>{
+      const tx=db.transaction(IDB_STORE,'readonly');
+      const req=tx.objectStore(IDB_STORE).get(id);
+      req.onsuccess=e=>resolve(e.target.result||null);
+      req.onerror=e=>reject(e.target.error);
+    });
+  }catch(e){console.warn('IDB load error:',e.message);return null;}
+}
+
+async function idbDeletePDF(id){
+  try{
+    const db=await openIDB();
+    return new Promise((resolve)=>{
+      const tx=db.transaction(IDB_STORE,'readwrite');
+      tx.objectStore(IDB_STORE).delete(id);
+      tx.oncomplete=()=>resolve();
+    });
+  }catch(e){}
+}
+
 async function storePDF(id,arrayBuffer){
   const blob=new Blob([arrayBuffer],{type:'application/pdf'});
   const path=pdfPath(id);
@@ -825,52 +879,68 @@ async function storePDF(id,arrayBuffer){
     console.warn('PDF storage error:',error.message);
     return;
   }
-  // Save the public URL directly into the panels table so all devices can load it
+  // Save to Supabase Storage
   const {data}=supabase.storage.from('panel-pdfs').getPublicUrl(path);
   const publicUrl=data.publicUrl;
   if(PANELS[id]) PANELS[id].pdfUrl=publicUrl;
   await supabase.from('panels').update({file_name:PANELS[id]?.file||'',updated_at:new Date().toISOString()}).eq('id',id);
-  console.log('PDF stored at:',publicUrl);
+  // Also cache locally in IndexedDB so it doesn't need to re-download
+  await idbSavePDF(id,arrayBuffer);
+  console.log('PDF stored + cached for',id);
 }
 
 async function loadPDFFromStorage(id){
-  const path=pdfPath(id);
   try{
-    // Get the public URL
-    const {data}=supabase.storage.from('panel-pdfs').getPublicUrl(path);
-    const publicUrl=data.publicUrl;
-    console.log('Loading PDF from:',publicUrl);
-    // Fetch with cache-busting to avoid stale responses on mobile
-    const resp=await fetch(publicUrl+'?t='+Date.now(),{cache:'no-store'});
-    if(!resp.ok){
-      console.log('PDF fetch failed:',resp.status,'for',id);
-      return;
+    let buf=null;
+
+    // Step 1: check local IndexedDB cache first (instant, no network)
+    const cached=await idbLoadPDF(id);
+    if(cached){
+      console.log('PDF loaded from local cache for',id);
+      buf=cached;
+    } else {
+      // Step 2: not cached — fetch from Supabase Storage
+      const {data}=supabase.storage.from('panel-pdfs').getPublicUrl(pdfPath(id));
+      const publicUrl=data.publicUrl;
+      console.log('Fetching PDF from Supabase for',id);
+      const resp=await fetch(publicUrl,{cache:'no-store'});
+      if(!resp.ok){
+        console.log('PDF not found in storage for',id,'(HTTP',resp.status+')');
+        const ldEl=document.getElementById('drw-loading-'+id);
+        const nofile=document.getElementById('drw-nofile-'+id);
+        if(ldEl) ldEl.style.display='none';
+        if(nofile) nofile.style.display='block';
+        return;
+      }
+      buf=await resp.arrayBuffer();
+      // Save to local cache for next time
+      await idbSavePDF(id,buf);
+      console.log('PDF fetched + cached for',id);
     }
-    const buf=await resp.arrayBuffer();
+
+    // Parse and store the PDF document
     const doc=await pdfjsLib.getDocument({data:buf}).promise;
     pdfDocs[id]=doc;
     pdfPage[id]=pdfPage[id]||1;
-    if(PANELS[id]) PANELS[id].pdfUrl=publicUrl;
-    // Update the viewer UI
+
+    // Update viewer UI
     const viewer=document.getElementById('drw-viewer-'+id);
     const noDrawing=document.getElementById('drw-nodrawing-'+id);
     const fnEl=document.getElementById('drw-fn-'+id);
-    if(viewer){viewer.style.display='flex';}
-    if(noDrawing){noDrawing.style.display='none';}
-    if(fnEl&&PANELS[id]?.file) fnEl.textContent=PANELS[id].file;
-    console.log('PDF loaded OK for',id);
-    // Hide loading indicator
     const ldEl=document.getElementById('drw-loading-'+id);
+    if(viewer) viewer.style.display='flex';
+    if(noDrawing) noDrawing.style.display='none';
+    if(fnEl&&PANELS[id]?.file) fnEl.textContent=PANELS[id].file;
     if(ldEl) ldEl.style.display='none';
-    // Always render — the view DOM is guaranteed to exist because
-    // openPanel (which calls buildView) always runs before loadPDFFromStorage
+
+    // Render into the canvas
     setTimeout(()=>renderPDF(id),80);
+
   }catch(e){
     console.log('PDF load error for',id,':',e.message);
-    // Show "no file" state after failed load
-    const loading=document.getElementById('drw-loading-'+id);
+    const ldEl=document.getElementById('drw-loading-'+id);
     const nofile=document.getElementById('drw-nofile-'+id);
-    if(loading) loading.style.display='none';
+    if(ldEl) ldEl.style.display='none';
     if(nofile) nofile.style.display='block';
   }
 }
@@ -883,7 +953,7 @@ async function replacePDF(id,input){
   const nm=document.getElementById('drw-fn-'+id);if(nm)nm.textContent=f.name;
   const nd=document.getElementById('drw-nodrawing-'+id);const vw=document.getElementById('drw-viewer-'+id);
   if(nd)nd.style.display='none';if(vw)vw.style.display='flex';
-  await storePDF(id,arrayBuffer);
+  await storePDF(id,arrayBuffer); // storePDF now also saves to IDB cache
   await supabase.from('panels').update({file_name:f.name,updated_at:new Date().toISOString()}).eq('id',id);
   renderPDF(id);input.value='';toast(`Drawing replaced for ${id}`,'success');
 }
